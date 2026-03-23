@@ -1,12 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PCCS_DEBUG_SHELL_ON_FAIL="${PCCS_DEBUG_SHELL_ON_FAIL:-true}"
+
+on_error() {
+  local rc="$?"
+  echo "PCCS entrypoint failed with exit code ${rc}."
+  if [[ "${PCCS_DEBUG_SHELL_ON_FAIL}" == "true" ]]; then
+    echo "Entering debug shell due to startup failure."
+    if [[ -x /bin/bash ]]; then
+      exec /bin/bash -l
+    else
+      exec /bin/sh -l
+    fi
+  fi
+  exit "${rc}"
+}
+
+trap on_error ERR
+
 if [[ -d "/opt/intel/sgx-dcap-pccs" ]]; then
   PCCS_DIR="/opt/intel/sgx-dcap-pccs"
 elif [[ -d "/opt/sgx-dcap/QuoteGeneration/pccs" ]]; then
   PCCS_DIR="/opt/sgx-dcap/QuoteGeneration/pccs"
 else
   echo "ERROR: PCCS installation directory not found."
+  if [[ "${PCCS_DEBUG_SHELL_ON_FAIL}" == "true" ]]; then
+    echo "Entering debug shell because PCCS not installed yet."
+    if [[ -x /bin/bash ]]; then
+      exec /bin/bash -l
+    else
+      exec /bin/sh -l
+    fi
+  fi
   exit 1
 fi
 
@@ -21,6 +47,14 @@ fi
 
 if [[ ! -f "${PCCS_CONFIG}" ]]; then
   echo "ERROR: PCCS config file not found: ${PCCS_CONFIG}"
+  if [[ "${PCCS_DEBUG_SHELL_ON_FAIL}" == "true" ]]; then
+    echo "Entering debug shell because PCCS config is missing."
+    if [[ -x /bin/bash ]]; then
+      exec /bin/bash -l
+    else
+      exec /bin/sh -l
+    fi
+  fi
   exit 1
 fi
 
@@ -62,4 +96,23 @@ mv "${tmp_file}" "${PCCS_CONFIG}"
 cd "${PCCS_DIR}"
 
 echo "Starting PCCS on ${PCCS_HOST}:${PCCS_PORT}"
-exec node pccs_server.js
+set +e
+node pccs_server.js
+rc=$?
+set -e
+
+echo "PCCS server exited with code ${rc}."
+
+# Ensure the container stays available for `podman exec ... bash` debugging.
+# Default: keep a shell on failure; set `PCCS_DEBUG_SHELL_ON_FAIL=false` to exit instead.
+PCCS_DEBUG_SHELL_ON_FAIL="${PCCS_DEBUG_SHELL_ON_FAIL:-true}"
+if [[ "${PCCS_DEBUG_SHELL_ON_FAIL}" == "true" ]]; then
+  echo "Entering debug shell because PCCS failed to stay running."
+  if [[ -x /bin/bash ]]; then
+    exec /bin/bash -l
+  else
+    exec /bin/sh -l
+  fi
+fi
+
+exit "${rc}"

@@ -26,11 +26,22 @@ if podman container exists "${CONTAINER_NAME}"; then
   podman rm -f "${CONTAINER_NAME}" >/dev/null
 fi
 
+DEV_ARGS=()
+for dev in /dev/sgx_enclave /dev/sgx_provision /dev/sgx_vepc; do
+  if [[ -e "${dev}" ]]; then
+    DEV_ARGS+=(--device "${dev}:${dev}")
+  else
+    echo "WARNING: device not found on host: ${dev}. SGX/PCCS may fail."
+  fi
+done
+
 echo "Starting rootless container: ${CONTAINER_NAME}"
 podman run -d \
   --name "${CONTAINER_NAME}" \
   -p "${PCCS_PORT}:8081" \
   --security-opt label=disable \
+  "${DEV_ARGS[@]}" \
+  --entrypoint /bin/bash \
   -e PCCS_PORT=8081 \
   -e PCCS_HOST="${PCCS_HOST}" \
   -e PCCS_API_KEY="${PCCS_API_KEY}" \
@@ -40,7 +51,8 @@ podman run -d \
   -e PCCS_REFRESH_SCHEDULE="${PCCS_REFRESH_SCHEDULE}" \
   -e PCCS_LOG_LEVEL="${PCCS_LOG_LEVEL}" \
   -e PCCS_USE_SECURE_CERT="${PCCS_USE_SECURE_CERT}" \
-  "${IMAGE_NAME}"
+  "${IMAGE_NAME}" \
+  -lc 'while true; do sleep 3600; done'
 
 echo "Container started. Check status with:"
 echo "  podman ps --filter name=${CONTAINER_NAME}"

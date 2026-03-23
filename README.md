@@ -44,10 +44,28 @@ mv ~/.config/containers/registries.conf ~/.config/containers/registries.conf.bak
 ./build-image.sh
 ```
 
+构建默认使用主机网络（等价于 `podman build --network host`）。如需覆盖可传：
+
+```bash
+BUILD_NETWORK=host ./build-image.sh
+```
+
+可透传额外 `podman build` 参数（例如禁用缓存）：
+
+```bash
+./build-image.sh --no-cache
+```
+
+代理说明：
+- 默认情况下 `build-image.sh` 会在检测到 `HTTP_PROXY/HTTPS_PROXY` 时把代理参数透传到 `podman build`，便于在网络受限环境下拉取依赖。
+- 如不希望走代理，可设置 `BUILD_USE_PROXY=0`。
+
 默认基础镜像源已设置为：
 
 - `docker.1ms.run/library/ubuntu:24.04`
 - 容器内 PCCS 安装方式：通过 Intel SGX APT 源安装 `sgx-dcap-pccs`（Ubuntu 24.04 / noble）
+- `build-image.sh` 默认会在容器构建阶段把 Ubuntu APT 源切到阿里云（`APT_MIRROR=aliyun`），使用 `https://mirrors.aliyun.com/ubuntu`
+- 可通过 `APT_MIRROR=official` 切回 Ubuntu 官方上游源
 - 构建脚本会自动回退基础镜像源：先尝试 `docker.1ms.run`，失败后回退 `ubuntu:24.04`
 
 参考文档（Intel TDX Enabling Guide, PCCS）：
@@ -82,6 +100,17 @@ PCCS_PORT=8081 \
 CONTAINER_NAME="sgx-pccs" \
 ./run-pccs-rootless.sh
 ```
+
+### 设备映射与 sudo
+
+`run-pccs-rootless.sh` 会尝试把以下设备节点映射到容器内（如果主机存在）：
+
+- `/dev/sgx_enclave`
+- `/dev/sgx_provision`
+
+同时镜像内会安装 `sudo`，并配置容器内免密 sudo，便于你在 `podman exec` 进入容器后直接使用 `sudo`。
+
+另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
 
 ## 5) 运行状态检查
 
