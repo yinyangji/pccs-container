@@ -4,9 +4,19 @@ set -euo pipefail
 IMAGE_NAME="${IMAGE_NAME:-local/sgx-pccs:ubuntu24.04}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 APT_MIRROR="${APT_MIRROR:-aliyun}"
-BUILD_USE_PROXY="${BUILD_USE_PROXY:-1}"
-BUILD_PROXY_URL="${BUILD_PROXY_URL:-${CLASH_PROXY_URL:-http://127.0.0.1:7890}}"
-EXTRA_BUILD_ARGS=("$@")
+PROXY_ARG=""
+EXTRA_BUILD_ARGS=()
+
+for a in "$@"; do
+  case "$a" in
+    --proxy=*)
+      PROXY_ARG="${a#--proxy=}"
+      ;;
+    *)
+      EXTRA_BUILD_ARGS+=("$a")
+      ;;
+  esac
+done
 
 # PCCS 镜像多次构建可能会因为旧层缓存导致 ENTRYPOINT/文件缺失等问题，
 # 所以默认总是使用 --no-cache（除非你显式传入一个包含 --no-cache 的参数集）。
@@ -29,24 +39,32 @@ fi
 
 echo "Building image: ${IMAGE_NAME}"
 echo "Build network mode: ${BUILD_NETWORK}"
+if [[ -n "${PROXY_ARG}" ]]; then
+  echo "Build proxy mode: enabled (${PROXY_ARG})"
+else
+  echo "Build proxy mode: disabled"
+fi
 if [[ "${#EXTRA_BUILD_ARGS[@]}" -gt 0 ]]; then
   echo "Extra podman build args: ${EXTRA_BUILD_ARGS[*]}"
 fi
 for base_image in "${BASE_IMAGES_LIST[@]}"; do
   echo "Trying base image: ${base_image}"
   build_args=(--network "${BUILD_NETWORK}" --build-arg "BASE_IMAGE=${base_image}" --build-arg "APT_MIRROR=${APT_MIRROR}")
-  if [[ "${BUILD_USE_PROXY}" == "1" ]]; then
-    HTTP_PROXY_VALUE="${HTTP_PROXY:-${http_proxy:-}}"
-    HTTPS_PROXY_VALUE="${HTTPS_PROXY:-${https_proxy:-}}"
-    NO_PROXY_VALUE="${NO_PROXY:-${no_proxy:-}}"
-
-    if [[ -z "${HTTP_PROXY_VALUE}" ]]; then HTTP_PROXY_VALUE="${BUILD_PROXY_URL}"; fi
-    if [[ -z "${HTTPS_PROXY_VALUE}" ]]; then HTTPS_PROXY_VALUE="${BUILD_PROXY_URL}"; fi
-    if [[ -z "${NO_PROXY_VALUE}" ]]; then NO_PROXY_VALUE="localhost,127.0.0.1"; fi
-
-    build_args+=(--build-arg "HTTP_PROXY=${HTTP_PROXY_VALUE}" --build-arg "http_proxy=${HTTP_PROXY_VALUE}")
-    build_args+=(--build-arg "HTTPS_PROXY=${HTTPS_PROXY_VALUE}" --build-arg "https_proxy=${HTTPS_PROXY_VALUE}")
-    build_args+=(--build-arg "NO_PROXY=${NO_PROXY_VALUE}" --build-arg "no_proxy=${NO_PROXY_VALUE}")
+  if [[ -n "${PROXY_ARG}" ]]; then
+    if [[ "${PROXY_ARG}" == *"://"* ]]; then
+      PROXY_URL="${PROXY_ARG}"
+    else
+      PROXY_URL="http://${PROXY_ARG}"
+    fi
+    NO_PROXY_VALUE="localhost,127.0.0.1"
+    build_args+=(
+      --build-arg "HTTP_PROXY=${PROXY_URL}"
+      --build-arg "http_proxy=${PROXY_URL}"
+      --build-arg "HTTPS_PROXY=${PROXY_URL}"
+      --build-arg "https_proxy=${PROXY_URL}"
+      --build-arg "NO_PROXY=${NO_PROXY_VALUE}"
+      --build-arg "no_proxy=${NO_PROXY_VALUE}"
+    )
   fi
 
   if podman build "${build_args[@]}" "${EXTRA_BUILD_ARGS[@]}" -t "${IMAGE_NAME}" -f Dockerfile .; then

@@ -57,9 +57,9 @@ BUILD_NETWORK=host ./build-image.sh
 ```
 
 代理说明：
-- 构建阶段默认会把 `HTTP(S)_PROXY/NO_PROXY` 透传给 `podman build`（用于拉取 `aliyun` 的 apt 包）。
+- 仅当你传入 `./build-image.sh --proxy=ip:port` 时，脚本才会在构建容器内添加 `apt/http` 等代理配置，方便拉取依赖。
+- 例如：`./build-image.sh --proxy=127.0.0.1:7890`
 - `Dockerfile` 不会把这些代理变量写入最终镜像，因此运行容器里仍然不需要/不会携带代理环境变量。
-- 若不想使用构建代理，可设置 `BUILD_USE_PROXY=0 ./build-image.sh`。
 
 默认基础镜像源已设置为：
 
@@ -141,6 +141,16 @@ sudo apt update
 
 ```bash
 sudo rm -f /etc/apt/apt.conf.d/99proxy
+```
+
+注意：这只保证 `apt` 使用代理。对于 `wget/curl/node` 等工具，通常还需要设置它们支持的代理方式（多数支持环境变量或命令参数）。
+
+以 `wget` 为例，很多系统更偏向读取小写环境变量：
+
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export no_proxy=localhost,127.0.0.1
 ```
 
 另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
