@@ -111,7 +111,37 @@ CONTAINER_NAME="sgx-pccs" \
 
 同时镜像内会安装 `sudo`，并配置容器内免密 sudo，便于你在 `podman exec` 进入容器后直接使用 `sudo`。
 
-说明：启动脚本已改为 `--network host`，因此通常不需要在容器内单独设置代理；若你主机 Clash 监听在 `127.0.0.1:7890`，容器网络与宿主一致即可直接使用。
+说明：即使使用 `--network host`，如果你的网络访问外网本身依赖 Clash（例如直连被拦截），那么容器里执行 `apt update/curl` 仍需要走代理。
+
+建议（只用于你安装/更新依赖时）：
+- 临时方式：`HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 apt update`
+- 或 apt 方式：`apt -o Acquire::http::Proxy=http://127.0.0.1:7890 -o Acquire::https::Proxy=http://127.0.0.1:7890 update`
+
+你也可以直接按需执行：
+
+```bash
+apt update \
+  -o Acquire::http::Proxy=http://127.0.0.1:7890 \
+  -o Acquire::https::Proxy=http://127.0.0.1:7890
+```
+
+## 容器内永久设置 apt 代理
+
+如果你希望 `apt update/apt install` 在容器内一直自动走 Clash（假设宿主机监听在 `127.0.0.1:7890`），可写入 apt 配置文件（需要 root/sudo）：
+
+```bash
+sudo tee /etc/apt/apt.conf.d/99proxy >/dev/null <<'EOF'
+Acquire::http::Proxy "http://127.0.0.1:7890";
+Acquire::https::Proxy "http://127.0.0.1:7890";
+EOF
+sudo apt update
+```
+
+如需取消永久代理，删除该文件即可：
+
+```bash
+sudo rm -f /etc/apt/apt.conf.d/99proxy
+```
 
 另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
 
