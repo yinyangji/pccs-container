@@ -1,4 +1,4 @@
-# SGX PCCS Container (Ubuntu 24.04, Rootless Podman)
+# SGX PCCS Container (Ubuntu 24.04, Rootless Podman) --not ready
 
 ## 1) 前置条件
 
@@ -154,6 +154,26 @@ export no_proxy=localhost,127.0.0.1
 ```
 
 另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
+
+## 容器内 pip 代理（解决 pypi.org 访问失败）
+
+有些 Intel 包的安装脚本会在 `dpkg`/`apt` 的 post-install 阶段直接调用 `pip` 去下载 `pypi.org` 依赖。
+
+如果你遇到类似 `Connection to pypi.org timed out` / 找不到 `setuptools` 之类的错误，可以给 pip 配置代理（需要 root/sudo）：
+
+```bash
+sudo tee /etc/pip.conf >/dev/null <<'EOF'
+[global]
+proxy = http://127.0.0.1:7890
+EOF
+```
+
+然后重试：
+
+```bash
+sudo dpkg --configure -a
+sudo apt-get -f install
+```
 
 ## 5) 运行状态检查
 
