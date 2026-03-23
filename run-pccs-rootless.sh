@@ -38,7 +38,7 @@ done
 echo "Starting rootless container: ${CONTAINER_NAME}"
 podman run -d \
   --name "${CONTAINER_NAME}" \
-  -p "${PCCS_PORT}:8081" \
+  --network host \
   --security-opt label=disable \
   "${DEV_ARGS[@]}" \
   --entrypoint /bin/bash \

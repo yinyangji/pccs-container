@@ -11,12 +11,10 @@ ARG https_proxy
 ARG no_proxy
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    http_proxy=${http_proxy} \
-    https_proxy=${https_proxy} \
-    no_proxy=${no_proxy}
+
+# IMPORTANT:
+# Do NOT bake proxy environment variables into the final image.
+# We keep them as build-time ARG only, and apply them to specific RUN commands below.
 
 #
 # Apt mirror selection.
@@ -56,7 +54,10 @@ RUN set -e; \
       fi; \
     fi
 
-RUN apt-get update && \
+RUN set -e; \
+    export HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"; \
+    export http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" no_proxy="${no_proxy:-}"; \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -68,7 +69,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x required by PCCS.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN set -e; \
+    export HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"; \
+    export http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" no_proxy="${no_proxy:-}"; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get update && \
     apt-get install -y --no-install-recommends nodejs cracklib-runtime && \
     rm -rf /var/lib/apt/lists/*

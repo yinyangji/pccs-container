@@ -57,8 +57,9 @@ BUILD_NETWORK=host ./build-image.sh
 ```
 
 代理说明：
-- 默认情况下 `build-image.sh` 会在检测到 `HTTP_PROXY/HTTPS_PROXY` 时把代理参数透传到 `podman build`，便于在网络受限环境下拉取依赖。
-- 如不希望走代理，可设置 `BUILD_USE_PROXY=0`。
+- 构建阶段默认会把 `HTTP(S)_PROXY/NO_PROXY` 透传给 `podman build`（用于拉取 `aliyun` 的 apt 包）。
+- `Dockerfile` 不会把这些代理变量写入最终镜像，因此运行容器里仍然不需要/不会携带代理环境变量。
+- 若不想使用构建代理，可设置 `BUILD_USE_PROXY=0 ./build-image.sh`。
 
 默认基础镜像源已设置为：
 
@@ -109,6 +110,8 @@ CONTAINER_NAME="sgx-pccs" \
 - `/dev/sgx_provision`
 
 同时镜像内会安装 `sudo`，并配置容器内免密 sudo，便于你在 `podman exec` 进入容器后直接使用 `sudo`。
+
+说明：启动脚本已改为 `--network host`，因此通常不需要在容器内单独设置代理；若你主机 Clash 监听在 `127.0.0.1:7890`，容器网络与宿主一致即可直接使用。
 
 另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
 
