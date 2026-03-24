@@ -68,6 +68,24 @@ RUN set -e; \
       wget && \
     rm -rf /var/lib/apt/lists/*
 
+# Add Intel SGX apt repository and install SGX user-space packages.
+RUN set -e; \
+    export HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"; \
+    export http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" no_proxy="${no_proxy:-}"; \
+    mkdir -p /etc/apt/keyrings && \
+    wget -qO /tmp/intel-sgx-deb.key https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key && \
+    cat /tmp/intel-sgx-deb.key > /etc/apt/keyrings/intel-sgx-keyring.asc && \
+    echo 'deb [signed-by=/etc/apt/keyrings/intel-sgx-keyring.asc arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu noble main' > /etc/apt/sources.list.d/intel-sgx.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      libsgx-qe3-logic \
+      libsgx-epid \
+      libsgx-quote-ex \
+      libsgx-dcap-ql \
+      libsgx-dcap-default-qpl && \
+    rm -f /tmp/intel-sgx-deb.key && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install Node.js 20.x required by PCCS.
 RUN set -e; \
     export HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"; \

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 单容器架构：
-# - pccs + aesmd 运行在同一个容器
-# - 映射 SGX 设备到该容器
+# 独立 PCCS 容器：
+# - 依赖外部 AESMD 容器输出的 /var/run/aesmd/aesm.socket
+# - 本脚本只启动 PCCS 容器
 
 IMAGE_NAME="${IMAGE_NAME:-localhost/local/sgx-pccs-aesmd:ubuntu24.04}"
 CONTAINER_NAME="${CONTAINER_NAME:-sgx-pccs}"
 PCCS_PORT="${PCCS_PORT:-8081}"
+AESMD_SOCKET_DIR="${AESMD_SOCKET_DIR:-${HOME}/.local/share/aesmd-shared}"
+AESMD_SOCKET_PATH="${AESMD_SOCKET_DIR}/aesm.socket"
+NETWORK_MODE="${NETWORK_MODE:-host}"
+RESTART_POLICY="${RESTART_POLICY:-always}"
 
 # Required by Intel PCS when retrieving collaterals.
 PCCS_API_KEY="${PCCS_API_KEY:-}"
@@ -25,6 +29,17 @@ if [[ -z "${PCCS_API_KEY}" ]]; then
   echo "WARNING: PCCS_API_KEY is empty. PCCS may fail to fetch collateral from Intel PCS."
 fi
 
+if [[ ! -d "${AESMD_SOCKET_DIR}" ]]; then
+  echo "ERROR: AESMD socket directory not found: ${AESMD_SOCKET_DIR}"
+  echo "Start AESMD container first (for example with ./run-aesm-rootless.sh)."
+  exit 1
+fi
+if [[ ! -S "${AESMD_SOCKET_PATH}" ]]; then
+  echo "ERROR: AESMD socket not found: ${AESMD_SOCKET_PATH}"
+  echo "Ensure AESMD container is running and exporting aesm.socket."
+  exit 1
+fi
+
 if ! podman image exists "${IMAGE_NAME}"; then
   echo "ERROR: image not found locally: ${IMAGE_NAME}"
   echo "Build it first with:"
@@ -39,23 +54,15 @@ if podman container exists "${CONTAINER_NAME}"; then
   podman rm -f "${CONTAINER_NAME}" >/dev/null
 fi
 
-DEV_ARGS=()
-for dev in /dev/sgx_enclave /dev/sgx_provision /dev/sgx_vepc; do
-  if [[ -e "${dev}" ]]; then
-    DEV_ARGS+=(--device "${dev}:${dev}")
-  else
-    echo "WARNING: device not found on host: ${dev}"
-  fi
-done
-
-echo "Starting single-container pccs+aesmd: ${CONTAINER_NAME}"
+echo "Starting PCCS container: ${CONTAINER_NAME}"
 podman run -d \
   --name "${CONTAINER_NAME}" \
-  --network host \
+  --network "${NETWORK_MODE}" \
+  --restart "${RESTART_POLICY}" \
   --security-opt label=disable \
-  "${DEV_ARGS[@]}" \
-  --entrypoint /bin/bash \
-  -e PCCS_PORT=8081 \
+  -v "${AESMD_SOCKET_DIR}:/var/run/aesmd:Z" \
+  -e PCCS_DEBUG_SHELL_ON_FAIL="${PCCS_DEBUG_SHELL_ON_FAIL:-true}" \
+  -e PCCS_PORT="${PCCS_PORT}" \
   -e PCCS_HOST="${PCCS_HOST}" \
   -e PCCS_API_KEY="${PCCS_API_KEY}" \
   -e PCCS_ADMIN_PASSWORD="${PCCS_ADMIN_PASSWORD}" \
@@ -64,24 +71,12 @@ podman run -d \
   -e PCCS_REFRESH_SCHEDULE="${PCCS_REFRESH_SCHEDULE}" \
   -e PCCS_LOG_LEVEL="${PCCS_LOG_LEVEL}" \
   -e PCCS_USE_SECURE_CERT="${PCCS_USE_SECURE_CERT}" \
-  "${IMAGE_NAME}" \
-  -lc '
-set -e
-mkdir -p /var/run/aesmd
-if [[ -x /opt/intel/sgx-aesm-service/aesm/aesm_service ]]; then
-  /opt/intel/sgx-aesm-service/aesm/aesm_service --no-daemon &
-else
-  echo "INFO: AESMD binary not found. Install it inside container when needed."
-fi
-if [[ -f /opt/intel/sgx-dcap-pccs/pccs_server.js ]]; then
-  cd /opt/intel/sgx-dcap-pccs
-  node pccs_server.js &
-else
-  echo "INFO: PCCS not installed yet. Install/configure it inside container."
-fi
-while true; do sleep 3600; done
-'
+  "${IMAGE_NAME}" >/dev/null
 
 echo "Container started. Check status with:"
 echo "  podman ps --filter name=${CONTAINER_NAME}"
 echo "  podman logs -f ${CONTAINER_NAME}"
+echo "  podman exec -it ${CONTAINER_NAME} bash"
+if [[ "${NETWORK_MODE}" != "host" ]]; then
+  echo "NOTE: expose PCCS with -p ${PCCS_PORT}:${PCCS_PORT} when not using host network."
+fi
