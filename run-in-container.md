@@ -1,5 +1,7 @@
 ## Rootless 双容器运行说明（AESMD + PCCS）
 
+**完整步骤（含 AESM 镜像来源、`sgx-dcap-pccs` 安装与 Podman 命令）已写入仓库根目录 [`README.md`](./README.md)。** 下文为简要索引，可能与脚本细节不完全同步。
+
 本文档与当前脚本保持一致：
 
 - `run-aesm-rootless.sh`：只启动 `aesmd` 容器

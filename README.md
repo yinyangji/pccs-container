@@ -1,12 +1,23 @@
-# SGX PCCS Container (Ubuntu 24.04, Rootless Podman) --not ready
+# SGX PCCS Container（Ubuntu 24.04，Rootless Podman）
 
 ## 1) 前置条件
 
 - 主机已安装 `podman`（支持 rootless）
+- 主机已配置 SGX 设备节点（如 `/dev/sgx_enclave`、`/dev/sgx_provision`；EDMM 场景常需 `/dev/sgx_vepc`）
 - 主机网络可访问 Intel PCS
-- 你已申请 Intel PCS API Key
+- 已申请 **Intel PCS API Key**
 
-## 2) 配置 rootless Podman 镜像加速（可选）
+## 2) 组件与来源
+
+| 组件 | 说明 |
+|------|------|
+| **`aesm-service/`** | 来自 **Intel® Software Guard Extensions** 官方 Linux 发行配套思路下的 Docker 多阶段示例（目录内 `Dockerfile`、`build_and_run_aesm_docker.sh` 含 **Intel 版权声明**，由 **intel/linux-sgx** 一类上游材料复制/改编而来）。本仓库用其 **`aesm` 构建目标** 生成 AESM 服务镜像，在容器内运行 `aesm_service --no-daemon`，并通过 **与 PCCS 共用的 Podman named volume** 暴露 `aesm.socket`。 |
+| **本仓库 `Dockerfile` / `build-image.sh`** | 构建 PCCS **运行环境镜像**（Intel SGX APT 源、依赖与入口脚本；PCCS 包 **`sgx-dcap-pccs`** 默认在容器内按需安装，见下文）。 |
+| **`run-pccs-rootless.sh`** | 以 rootless Podman 启动 PCCS 容器，挂载 AESM socket volume、SGX 设备与项目目录。 |
+
+架构要点：**先起 AESMD 容器**，再起 PCCS；两者通过同一 volume（默认名 **`aesmd-socket`**）挂载到容器内 **`/var/run/aesmd`**，PCCS 使用其中的 **`aesm.socket`**。
+
+## 3) 配置 rootless Podman 镜像加速（可选）
 
 以下配置仅作用于当前用户，不影响系统全局：
 
@@ -25,229 +36,260 @@ location = "docker.1ms.run"
 EOF
 ```
 
-验证配置：
+验证：
 
 ```bash
 podman info | sed -n '/registries:/,/store:/p'
 podman pull ubuntu:24.04
 ```
 
-回退配置（恢复默认）：
+回退：
 
 ```bash
 mv ~/.config/containers/registries.conf ~/.config/containers/registries.conf.bak
 ```
 
-## 3) 构建镜像
+## 4) 构建 PCCS 基础镜像
+
+在仓库根目录：
 
 ```bash
 ./build-image.sh
 ```
 
-构建默认使用主机网络（等价于 `podman build --network host`）。如需覆盖可传：
+构建默认使用主机网络（等价于 `podman build --network host`）。可选：
 
 ```bash
 BUILD_NETWORK=host ./build-image.sh
-```
-
-可透传额外 `podman build` 参数（例如禁用缓存）：
-
-```bash
 ./build-image.sh --no-cache
 ```
 
-代理说明：
-- 仅当你传入 `./build-image.sh --proxy=ip:port` 时，脚本才会在构建容器内添加 `apt/http` 等代理配置，方便拉取依赖。
-- 例如：`./build-image.sh --proxy=127.0.0.1:7890`
-- `Dockerfile` 不会把这些代理变量写入最终镜像，因此运行容器里仍然不需要/不会携带代理环境变量。
+代理：仅当传入 `./build-image.sh --proxy=ip:port` 时，构建过程才会使用代理；**最终镜像不会**写入代理环境变量。
 
-默认基础镜像源已设置为：
+默认基础镜像会先尝试 `docker.1ms.run/library/ubuntu:24.04`，失败则回退 `ubuntu:24.04`。`APT_MIRROR=aliyun`（默认）在构建阶段将 Ubuntu 源切到阿里云；`APT_MIRROR=official` 使用上游。
 
-- `docker.1ms.run/library/ubuntu:24.04`
-- 容器内 PCCS 安装方式：通过 Intel SGX APT 源安装 `sgx-dcap-pccs`（Ubuntu 24.04 / noble）
-- `build-image.sh` 默认会在容器构建阶段把 Ubuntu APT 源切到阿里云（`APT_MIRROR=aliyun`），使用 `https://mirrors.aliyun.com/ubuntu`
-- 可通过 `APT_MIRROR=official` 切回 Ubuntu 官方上游源
-- 构建脚本会自动回退基础镜像源：先尝试 `docker.1ms.run`，失败后回退 `ubuntu:24.04`
+参考：[Intel TDX Enabling Guide — PCCS](https://cc-enabling.trustedservices.intel.com/intel-tdx-enabling-guide/02/infrastructure_setup/#provisioning-certificate-caching-service-pccs)
 
-参考文档（Intel TDX Enabling Guide, PCCS）：
-
-- [Infrastructure Setup - Intel TDX Enabling Guide](https://cc-enabling.trustedservices.intel.com/intel-tdx-enabling-guide/02/infrastructure_setup/#provisioning-certificate-caching-service-pccs)
-
-可选自定义镜像名：
+可选：
 
 ```bash
-IMAGE_NAME="local/sgx-pccs:ubuntu24.04" ./build-image.sh
-```
-
-可选自定义候选基础镜像（逗号分隔，按顺序尝试）：
-
-```bash
+IMAGE_NAME="localhost/local/sgx-pccs-aesmd:ubuntu24.04" ./build-image.sh
 BASE_IMAGES="docker.1ms.run/library/ubuntu:24.04,ubuntu:24.04" ./build-image.sh
 ```
 
-## 4) 启动 PCCS（rootless）
+## 5) Podman rootless 端到端：AESMD + PCCS
 
-最小启动：
+### 5.1 启动 AESMD（`aesm-service`）
+
+在仓库根目录执行（将 `podman` 对应替换为你环境中的命令即可；与 Intel 原版 `build_and_run_aesm_docker.sh` 中的 `docker` 命令等价）：
 
 ```bash
-PCCS_API_KEY="<你的Intel_PCS_API_KEY>" ./run-pccs-rootless.sh
+cd aesm-service
+podman build --target aesm -t localhost/sgx_aesm -f ./Dockerfile ./
 ```
 
-自定义端口和容器名：
+创建与 PCCS 脚本一致的 **named volume**（默认名 `aesmd-socket`，勿与 `run-pccs-rootless.sh` 中 `AESMD_SOCKET_VOLUME` 不一致）：
 
 ```bash
-PCCS_API_KEY="<你的Intel_PCS_API_KEY>" \
+podman volume inspect aesmd-socket >/dev/null 2>&1 || podman volume create aesmd-socket
+```
+
+启动 AESM 容器（按主机设备情况增减 `--device`；无 `/dev/sgx_vepc` 则去掉该行）：
+
+```bash
+podman rm -f aesm-service 2>/dev/null || true
+podman run -d --name aesm-service \
+  --device /dev/sgx_enclave --device /dev/sgx_provision \
+  $([ -e /dev/sgx_vepc ] && echo --device /dev/sgx_vepc) \
+  -v /dev/log:/dev/log \
+  -v aesmd-socket:/var/run/aesmd:Z \
+  localhost/sgx_aesm
+```
+
+确认 socket 侧就绪（需在 PCCS 容器内或同 volume 视角下验证；主机上可直接看 volume 挂载点或使用 `podman exec`）：
+
+```bash
+podman ps --filter name=aesm-service
+podman logs aesm-service
+```
+
+### 5.2 启动 PCCS 容器（首次建议手动安装模式）
+
+默认 **`PCCS_MANUAL_INSTALL_MODE=true`**：容器起后台空闲进程，便于你 **`podman exec` 进容器** 安装 PCCS 包并完成 Intel 的 `install.sh`。请设置 API Key 等信息：
+
+```bash
+cd /path/to/pccs-container
+PCCS_API_KEY="<你的_Intel_PCS_API_KEY>" ./run-pccs-rootless.sh
+```
+
+常用可选环境变量：`PCCS_PORT`、`CONTAINER_NAME`、`AESMD_SOCKET_VOLUME`、`PROJECTS_HOST_DIR`、`NETWORK_MODE` 等（见文末「环境变量说明」）。
+
+进入容器：
+
+```bash
+podman exec -it sgx-pccs bash
+```
+
+### 5.3 容器内安装 `sgx-dcap-pccs` 并完成配置
+
+镜像已配置 Intel SGX APT 源与占位 **`/usr/bin/systemctl`** / **`initctl`**（供 `dpkg` 在无 systemd 环境下通过维护脚本）。**Podman** 下 cgroup 通常不含 `docker` 字符串，Intel `startup.sh` 会误判环境；因此 **`apt` 完成配置前** 需要存在 **`/run/systemd/system`**（`/run` 多为 tmpfs，**新起容器后**若再次安装需重做）：
+
+```bash
+sudo install -d /run/systemd/system
+# 或（重建镜像后可用）: sudo /usr/local/bin/pccs-apt-prep.sh
+sudo apt-get update
+sudo apt-get install -y sgx-dcap-pccs
+```
+
+若包已解压但 **`dpkg --configure` 曾失败**，可：
+
+```bash
+sudo install -d /run/systemd/system
+sudo dpkg --configure -a
+```
+
+若仍提示找不到 `systemctl`，确认占位在 **`/usr/bin`**（勿仅用 `/usr/local/bin`，因 `dpkg` 的 `PATH` 常不含后者）：
+
+```bash
+for n in systemctl initctl; do printf '%s\n' '#!/bin/sh' 'exit 0' | sudo tee "/usr/bin/$n" >/dev/null; sudo chmod 755 "/usr/bin/$n"; done
+sudo dpkg --configure -a
+```
+
+非交互安装时 Intel 会跳过由 **`pccs` 用户** 运行的 **`install.sh`**。在容器内执行（与包内提示一致）：
+
+```bash
+/bin/su - pccs -c '/opt/intel/sgx-dcap-pccs/install.sh'
+```
+
+安装完成后应存在 **`/opt/intel/sgx-dcap-pccs`** 及配置模板；本仓库入口脚本会用环境变量渲染 **`config/default.json`**。
+
+### 5.4 改为由入口脚本自动运行 PCCS
+
+确认 AESMD 仍在运行且 **`aesmd-socket`** 未删。在宿主机：
+
+```bash
+PCCS_MANUAL_INSTALL_MODE=false PCCS_API_KEY="<你的_Intel_PCS_API_KEY>" ./run-pccs-rootless.sh
+```
+
+之后 PCCS 由镜像入口 **`pccs-entrypoint.sh`** 启动 `node pccs_server.js`。调试时可设 `PCCS_DEBUG_SHELL_ON_FAIL=true`（默认），失败时留在 shell。
+
+自定义端口与容器名示例：
+
+```bash
+PCCS_MANUAL_INSTALL_MODE=false \
+PCCS_API_KEY="<你的_Intel_PCS_API_KEY>" \
 PCCS_PORT=8081 \
 CONTAINER_NAME="sgx-pccs" \
 ./run-pccs-rootless.sh
 ```
 
-### 设备映射与 sudo
+### 5.5 设备映射、AESM socket 与权限
 
-`run-pccs-rootless.sh` 会尝试把以下设备节点映射到容器内（如果主机存在）：
+- **设备**：`run-pccs-rootless.sh` 映射 `/dev/sgx_enclave`、`/dev/sgx_provision`；若主机存在 **`/dev/sgx_vepc`** 则一并映射（QE3/EDMM 常见依赖）。
+- **Rootless**：打开设备仍受宿主机内核与节点权限约束。通常需将运行 Podman 的用户加入 **`sgx`** 组（`sudo usermod -aG sgx "$USER"` 后重新登录或 `newgrp sgx`）。若 `/dev/sgx_provision` 为 `root:root` 且 `600`，需按安全策略调整 udev/组或改用有权限的方式运行。
+- **脚本**：已使用 **`--group-add keep-groups`** 以继承宿主辅助组。
+- **AESM volume**：默认 **`aesmd-socket`** → 容器内 **`/var/run/aesmd`**（**`aesm.socket`**）。覆盖时使用 **`AESMD_SOCKET_VOLUME`**。
+- **镜像内 sudo**：已配置免密 sudo，便于在 `podman exec` 内安装与排查。
 
-- `/dev/sgx_enclave`
-- `/dev/sgx_provision`
+## 6) 容器内代理与排错（apt / pip）
 
-同时镜像内会安装 `sudo`，并配置容器内免密 sudo，便于你在 `podman exec` 进入容器后直接使用 `sudo`。
+### apt 代理（仅安装依赖时需要）
 
-说明：即使使用 `--network host`，如果你的网络访问外网本身依赖 Clash（例如直连被拦截），那么容器里执行 `apt update/curl` 仍需要走代理。
-
-建议（只用于你安装/更新依赖时）：
-- 临时方式：`HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 apt update`
-- 或 apt 方式：`apt -o Acquire::http::Proxy=http://127.0.0.1:7890 -o Acquire::https::Proxy=http://127.0.0.1:7890 update`
-
-你也可以直接按需执行：
+临时：
 
 ```bash
-apt update \
-  -o Acquire::http::Proxy=http://127.0.0.1:7890 \
-  -o Acquire::https::Proxy=http://127.0.0.1:7890
+sudo apt-get update -o Acquire::http::Proxy=http://127.0.0.1:7890 -o Acquire::https::Proxy=http://127.0.0.1:7890
 ```
 
-## 容器内永久设置 apt 代理
-
-如果你希望 `apt update/apt install` 在容器内一直自动走 Clash（假设宿主机监听在 `127.0.0.1:7890`），可写入 apt 配置文件（需要 root/sudo）：
+持久（示例）：
 
 ```bash
 sudo tee /etc/apt/apt.conf.d/99proxy >/dev/null <<'EOF'
 Acquire::http::Proxy "http://127.0.0.1:7890";
 Acquire::https::Proxy "http://127.0.0.1:7890";
 EOF
-sudo apt update
 ```
 
-如需取消永久代理，删除该文件即可：
+取消：`sudo rm -f /etc/apt/apt.conf.d/99proxy`。
 
-```bash
-sudo rm -f /etc/apt/apt.conf.d/99proxy
-```
+`wget`/`curl` 等可另设 `http_proxy`/`https_proxy` 环境变量。
 
-注意：这只保证 `apt` 使用代理。对于 `wget/curl/node` 等工具，通常还需要设置它们支持的代理方式（多数支持环境变量或命令参数）。
+### `sgx-dcap-pccs` 与 `systemctl` / Podman（小结）
 
-以 `wget` 为例，很多系统更偏向读取小写环境变量：
+- 占位 **`systemctl`** 须在 **`/usr/bin`**；且 **`/run/systemd/system`** 须在 **`dpkg --configure` 前** 创建（见 **§5.3**）。**Podman** 下 cgroup 不含 `docker` 时，仅依赖「容器检测」分支不可靠，**务必**创建该目录。
+- 镜像构建请使用当前仓库 **`Dockerfile`**，以包含上述占位与 **`pccs-apt-prep.sh`**。
 
-```bash
-export http_proxy=http://127.0.0.1:7890
-export https_proxy=http://127.0.0.1:7890
-export no_proxy=localhost,127.0.0.1
-```
-
-另外：如果 `PCCS_DEBUG_SHELL_ON_FAIL` 未显式设置，入口脚本会在 PCCS 进程退出后自动进入 `/bin/bash -l`，确保你仍能 `podman exec ... bash` 进行排查（你可以设置 `PCCS_DEBUG_SHELL_ON_FAIL=false` 让其直接退出）。
-
-## 容器内 pip 代理（解决 pypi.org 访问失败）
-
-有些 Intel 包的安装脚本会在 `dpkg`/`apt` 的 post-install 阶段直接调用 `pip` 去下载 `pypi.org` 依赖。
-
-如果你遇到类似 `Connection to pypi.org timed out` / 找不到 `setuptools` 之类的错误，可以给 pip 配置代理（需要 root/sudo）：
+### pip 代理（部分 Intel 脚本会在 post-install 调用 pip）
 
 ```bash
 sudo tee /etc/pip.conf >/dev/null <<'EOF'
 [global]
 proxy = http://127.0.0.1:7890
 EOF
-```
-
-然后重试：
-
-```bash
 sudo dpkg --configure -a
 sudo apt-get -f install
 ```
 
-## 5) 运行状态检查
+## 7) 运行状态检查
 
 ```bash
+podman ps --filter name=aesm-service
 podman ps --filter name=sgx-pccs
+podman logs -f aesm-service
 podman logs -f sgx-pccs
 ```
 
-## 6) 停止与删除
+## 8) 停止与删除
 
 ```bash
 podman rm -f sgx-pccs
+podman rm -f aesm-service
+# 若需删除 socket volume：podman volume rm aesmd-socket
 ```
 
-## 7) 作为 systemd user unit 运行（登录前可用）
-
-安装并启动 user unit：
+## 9) 作为 systemd user unit 运行（登录前可用）
 
 ```bash
 ./install-user-unit.sh
 ```
 
-安装脚本会生成：
+生成：
 
 - `~/.config/systemd/user/sgx-pccs.service`
 - `~/.config/sgx-pccs/pccs.env`
 
-编辑 `~/.config/sgx-pccs/pccs.env` 后重启服务：
+说明：当前 **`install-user-unit.sh`** 内的 `podman run` 为简化示例（端口映射、环境变量），**未包含** 与 **`run-pccs-rootless.sh`** 相同的 AESM volume、设备映射与 `keep-groups`。若需开机自启且依赖 AESMD，请自行按 **`run-pccs-rootless.sh`** 补齐 **`ExecStart`** 参数，或确保 AESMD 已由其他 unit 先行启动且 volume 一致。
+
+常用命令：
 
 ```bash
 systemctl --user restart sgx-pccs.service
-```
-
-查看服务状态与日志：
-
-```bash
 systemctl --user status sgx-pccs.service
 journalctl --user -u sgx-pccs.service -f
 ```
 
-要实现“所有用户登录前就可用”，必须启用 linger（仅需一次）：
+登录前自启（需一次性 root 权限）：
 
 ```bash
-sudo loginctl enable-linger $USER
-loginctl show-user $USER -p Linger
+sudo loginctl enable-linger "$USER"
+loginctl show-user "$USER" -p Linger
 ```
-
-`Linger=yes` 后，用户 systemd manager 会在开机时启动，`sgx-pccs.service` 将在用户未登录时自动拉起。
 
 ## 环境变量说明（常用）
 
 - `PCCS_API_KEY`：Intel PCS API Key（建议必填）
-- `PCCS_PORT`：主机映射端口（默认 `8081`）
-- `PCCS_ADMIN_PASSWORD`：PCCS 管理口令
-- `PCCS_USER_PASSWORD`：PCCS 用户口令
-- `PCCS_PROXY`：代理地址（如 `http://proxy:port`）
-- `PCCS_REFRESH_SCHEDULE`：刷新计划（cron 表达式）
-- `PCCS_LOG_LEVEL`：日志级别（默认 `info`）
-- `PCCS_USE_SECURE_CERT`：是否使用安全证书（`true/false`）
+- `PCCS_PORT`：监听端口（默认 `8081`；非 host 网络时需自行 `-p` 映射）
+- `PCCS_MANUAL_INSTALL_MODE`：首次安装 `true`，完成后改为 `false`（默认脚本为 `true`）
+- `AESMD_SOCKET_VOLUME`：与 AESMD 共用的 volume 名（默认 `aesmd-socket`）
+- `PROJECTS_HOST_DIR` / `PROJECTS_CONTAINER_DIR`：宿主机项目目录映射进 PCCS 容器
+- `PCCS_ADMIN_PASSWORD` / `PCCS_USER_PASSWORD` / `PCCS_PROXY` / `PCCS_REFRESH_SCHEDULE` / `PCCS_LOG_LEVEL` / `PCCS_USE_SECURE_CERT`
+- `PCCS_DEBUG_SHELL_ON_FAIL`：PCCS 退出后是否进入 shell 便于排查
 
 ## 无 sudo 网络体检（排查“联不上网”）
-
-执行一键体检脚本：
 
 ```bash
 chmod +x ./network-check-nosudo.sh
 ./network-check-nosudo.sh
 ```
 
-脚本会检查：
-
-- 默认路由与网关可达性
-- DNS 解析是否正常
-- 到公网 IP 的 TCP 端口连通性（80/443）
-- 基本 HTTP/HTTPS 连通性（`curl`）
-
-并输出简要结论（如 DNS 故障、仅局域网可达、疑似出站被策略拦截等），全程不需要 `sudo`。
+脚本检查路由、DNS、TCP 80/443、`curl` 等，全程不需要 `sudo`。

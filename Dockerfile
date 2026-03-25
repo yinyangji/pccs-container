@@ -99,6 +99,15 @@ RUN set -e; \
 # NOTE: this is less secure, but common for single-purpose dev/test containers.
 RUN echo 'ALL ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-container-nopasswd && chmod 440 /etc/sudoers.d/99-container-nopasswd
 
+# sgx-dcap-pccs postinst expects systemd. OCI images have no real systemctl; stubs
+# return success so `apt-get install sgx-dcap-pccs` (manual install in container) completes.
+# dpkg maintainer scripts often use PATH without /usr/local/bin, so install under /usr/bin.
+RUN set -e; \
+    for name in systemctl initctl; do \
+      printf '%s\n' '#!/bin/sh' 'exit 0' > "/usr/bin/${name}"; \
+      chmod 755 "/usr/bin/${name}"; \
+    done
+
 #
 # PCCS/SGX packages are intentionally not installed during image build.
 # You can install them later inside the container (this image is mainly
@@ -107,7 +116,8 @@ RUN echo 'ALL ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-container-nopasswd && 
 WORKDIR /root
 
 COPY container/entrypoint.sh /usr/local/bin/pccs-entrypoint.sh
-RUN chmod +x /usr/local/bin/pccs-entrypoint.sh
+COPY container/pccs-apt-prep.sh /usr/local/bin/pccs-apt-prep.sh
+RUN chmod +x /usr/local/bin/pccs-entrypoint.sh /usr/local/bin/pccs-apt-prep.sh
 
 EXPOSE 8081
 
