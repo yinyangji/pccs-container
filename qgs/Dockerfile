@@ -2,7 +2,7 @@ FROM docker.1ms.run/library/ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG DCAP_VERSION="1.25"
-ARG PCCS_VERSION="1.25.100.1-noble1"
+ARG QGS_VERSION="1.25.100.1-noble1"
 
 # Ubuntu 24.04 默认使用 deb822（ubuntu.sources）；同时兼容传统 sources.list
 RUN set -e; \
@@ -40,30 +40,13 @@ RUN tar zxvf sgx_debian_local_repo.tgz && \
 RUN echo "deb [trusted=yes arch=amd64] file:/sgx_debian_local_repo noble main" |\
     tee /etc/apt/sources.list.d/sgx_debian_local_repo.list
 
-RUN mkdir -p /etc/apt/keyrings
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key |\
-    gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-RUN echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" |\
-    tee /etc/apt/sources.list.d/nodesource.list
-
-# The postinst will check the directory for configuration
-RUN mkdir /etc/init/
-
-RUN apt-get update && apt-get install -y nodejs cracklib-runtime sgx-dcap-pccs=${PCCS_VERSION} sgx-pck-id-retrieval-tool=${PCCS_VERSION} && \
+RUN apt-get update && apt-get install -y \
+    tdx-qgs=${QGS_VERSION} \
+    libsgx-enclave-common-dev \
+    libsgx-dcap-default-qpl \
+    sgx-ra-service && \
     rm -rf /var/lib/apt/lists/*
 
-RUN cd /opt/intel/sgx-dcap-pccs/ && \
-    npm config set engine-strict true && \
-    npm install
+COPY sgx_default_qcnl.conf /etc/
 
-RUN mkdir /opt/intel/sgx-dcap-pccs/ssl_key
-
-COPY default.json /opt/intel/sgx-dcap-pccs/config/
-COPY network_setting.conf /opt/intel/sgx-pck-id-retrieval-tool/
-COPY ssl_key/ /opt/intel/sgx-dcap-pccs/ssl_key/
-
-WORKDIR /opt/intel/sgx-dcap-pccs/
-
-EXPOSE 8081
-
-CMD ["node", "pccs_server.js"]
+CMD ["/opt/intel/tdx-qgs/qgs", "--no-daemon"]
