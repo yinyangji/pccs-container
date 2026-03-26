@@ -4,7 +4,7 @@ PCCS (Provisioning Certificate Caching Service) service implementation comes fro
 [DCAP](https://github.com/intel/SGXDataCenterAttestationPrimitives/blob/master/QuoteGeneration/pccs/README.md).
 Currently, the package of PCCS only support several distros. Using docker to deploy the PCCS service can be an alternative for some unsupported distros, like RHEL9.
 
-本目录下 `./build.sh` 默认**先构建镜像再启动容器**（与仓库 `aesm-service/build_and_run_aesm_docker.sh` 用法类似）。请先启动 AESM 容器并写入 `aesmd-socket` 卷，再运行 PCCS。仅构建不加 `-a run`：`-a build`；仅启动已有镜像：`-a run`。
+本目录下 `./build_and_run_pccs_docker.sh` 默认**先构建镜像再启动容器**（与仓库 `aesm-service/build_and_run_aesm_docker.sh` 用法类似）。请先启动 AESM 容器并写入 `aesmd-socket` 卷，再运行 PCCS。仅构建：`-a build`；仅启动已有镜像：`-a run`。
 
 ## 1. PCCS Service Usage Guide
 

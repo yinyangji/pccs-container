@@ -13,6 +13,31 @@ IMAGE_NAME="${IMAGE_NAME:-localhost/local/pccs-container:ubuntu24.04}"
 CONTAINER_NAME="${CONTAINER_NAME:-pccs}"
 AESMD_VOLUME="${AESMD_VOLUME:-aesmd-socket}"
 
+# docker build 默认使用 bridge：容器内 127.0.0.1 不是宿主机，故指向本机 Clash 等代理会失败。
+# BUILD_NETWORK=auto（默认）：若 http(s)_proxy 含 127.0.0.1 或 localhost，自动加 --network host
+# BUILD_NETWORK=host|bridge|其它值：强制对应 docker --network
+pccs_docker_build_network_array() {
+    docker_build_net=()
+    case "${BUILD_NETWORK:-auto}" in
+        host)
+            echo "docker build 使用 --network=host（BUILD_NETWORK=host）。" >&2
+            docker_build_net=(--network host)
+            ;;
+        bridge)
+            ;;
+        auto)
+            local _p="${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}"
+            if [[ "${_p}" =~ 127\.0\.0\.1|localhost ]]; then
+                echo "检测到代理指向本机；docker build 使用 --network=host，以便构建阶段访问宿主机代理。" >&2
+                docker_build_net=(--network host)
+            fi
+            ;;
+        *)
+            docker_build_net=(--network "${BUILD_NETWORK}")
+            ;;
+    esac
+}
+
 action="all"
 docker_build_clean_param=""
 explicit_image=""
@@ -29,7 +54,8 @@ usage: $(basename "$0") [OPTION]...
   -f                                docker build --no-cache
   -h                                帮助
 
-环境变量：IMAGE_NAME、CONTAINER_NAME、AESMD_VOLUME（与 aesm-service 共用 aesmd socket 卷名，默认 aesmd-socket）
+  环境变量：IMAGE_NAME、CONTAINER_NAME、AESMD_VOLUME（与 aesm-service 共用 aesmd socket 卷名，默认 aesmd-socket）
+           BUILD_NETWORK：docker build 网络模式；默认 auto（本机代理时自动 host）。见脚本内注释。
 EOM
     exit 1
 }
@@ -63,29 +89,38 @@ process_args() {
 process_args "$@"
 
 build_image() {
-    if [ -f "${curr_dir}/pre-build.sh" ]; then
-        echo "Execute pre-build script: ${curr_dir}/pre-build.sh"
-        (cd "${curr_dir}" && ./pre-build.sh) || {
-            echo "pre-build.sh failed" >&2
-            exit 1
-        }
-    fi
+    # if [ -f "${curr_dir}/pre-build.sh" ]; then
+    #     echo "Execute pre-build script: ${curr_dir}/pre-build.sh"
+    #     (cd "${curr_dir}" && ./pre-build.sh) || {
+    #         echo "pre-build.sh failed" >&2
+    #         exit 1
+    #     }
+    # fi
 
     echo "Build => ${IMAGE_NAME}"
     cd "${top_dir}"
+    pccs_docker_build_network_array
     if [[ -n "${docker_build_clean_param}" ]]; then
         docker build --no-cache \
+            "${docker_build_net[@]}" \
             --build-arg http_proxy \
             --build-arg https_proxy \
             --build-arg no_proxy \
+            --build-arg HTTP_PROXY \
+            --build-arg HTTPS_PROXY \
+            --build-arg NO_PROXY \
             -f "${curr_dir}/Dockerfile" \
             -t "${IMAGE_NAME}" \
             "${curr_dir}"
     else
         docker build \
+            "${docker_build_net[@]}" \
             --build-arg http_proxy \
             --build-arg https_proxy \
             --build-arg no_proxy \
+            --build-arg HTTP_PROXY \
+            --build-arg HTTPS_PROXY \
+            --build-arg NO_PROXY \
             -f "${curr_dir}/Dockerfile" \
             -t "${IMAGE_NAME}" \
             "${curr_dir}"
