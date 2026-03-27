@@ -29,14 +29,53 @@
 #
 
 
-FROM ubuntu:24.04 as sgxbase
-RUN sed -i 's@archive.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list.d/ubuntu.sources \
-    && sed -i 's@security.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list.d/ubuntu.sources \
-    && apt-get update && apt-get install -y \
-    gnupg \
-    wget
+FROM ubuntu:22.04 as sgxbase
 
-RUN echo 'deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu noble main' > /etc/apt/sources.list.d/intel-sgx.list
+ARG DEBIAN_FRONTEND=noninteractive
+ARG APT_MIRROR=aliyun
+
+# 必须先安装 ca-certificates，再切 HTTPS 镜像源；APT_MIRROR=aliyun 时与 pccs/Dockerfile 一致（含 99no-verify 以应对 MITM/透明代理）。
+RUN set -e; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    if [ "${APT_MIRROR}" = "aliyun" ]; then \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i \
+          -e 's|http://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|http://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|https://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|https://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.aliyun.com/ubuntu-ports|g' \
+          -e 's|https://ports.ubuntu.com/ubuntu-ports|https://mirrors.aliyun.com/ubuntu-ports|g' \
+          -e 's|^deb http://|deb https://|g' \
+          -e 's|^deb-src http://|deb-src https://|g' \
+          /etc/apt/sources.list; \
+      fi; \
+      if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i \
+          -e 's|http://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|http://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|https://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|https://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' \
+          -e 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.aliyun.com/ubuntu-ports|g' \
+          -e 's|https://ports.ubuntu.com/ubuntu-ports|https://mirrors.aliyun.com/ubuntu-ports|g' \
+          -e 's|http://|https://|g' \
+          /etc/apt/sources.list.d/ubuntu.sources; \
+      fi; \
+      echo 'Acquire::https::Verify-Peer "false"; Acquire::https::Verify-Host "false";' > /etc/apt/apt.conf.d/99no-verify; \
+    else \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's|^deb http://|deb https://|g; s|^deb-src http://|deb-src https://|g' /etc/apt/sources.list; \
+      fi; \
+      if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources; \
+      fi; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gnupg wget; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN echo 'deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' > /etc/apt/sources.list.d/intel-sgx.list
 RUN wget -qO - https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | apt-key add -
 RUN apt-get update 
 
@@ -44,21 +83,12 @@ FROM sgxbase as sgx_sample_builder
 # App build time dependencies
 RUN apt-get install -y build-essential
 
-# 0=release enclave, 1=debug enclave（便于排查；HW 下 Intel sample 仍支持）
-ARG SGX_SAMPLE_DEBUG=0
-
 WORKDIR /opt/intel
-RUN wget https://download.01.org/intel-sgx/latest/linux-latest/distro/ubuntu24.04-server/sgx_linux_x64_sdk_2.28.100.1.bin
-RUN chmod +x sgx_linux_x64_sdk_2.28.100.1.bin
-RUN echo 'yes' | ./sgx_linux_x64_sdk_2.28.100.1.bin
+RUN wget https://download.01.org/intel-sgx/sgx-linux/2.22/distro/ubuntu22.04-server/sgx_linux_x64_sdk_2.22.100.3.bin
+RUN chmod +x sgx_linux_x64_sdk_2.22.100.3.bin
+RUN echo 'yes' | ./sgx_linux_x64_sdk_2.22.100.3.bin
 WORKDIR /opt/intel/sgxsdk/SampleCode/SampleEnclave
-# fprintf 需要 stdio（若 sample 未直接包含则补上）
-RUN grep -qF '#include <stdio.h>' App/App.cpp || sed -i '1i#include <stdio.h>' App/App.cpp
-# Intel 官方 sample 对表内错误只打印固定英文，不打印十六进制；这里补上 ret，便于对照《Developer Reference》
-RUN sed -i \
-  's/print_error_message(ret);/fprintf(stderr, "sgx_create_enclave ret=%#x\\n", (unsigned int)ret); print_error_message(ret);/' \
-  App/App.cpp
-RUN SGX_DEBUG=${SGX_SAMPLE_DEBUG} SGX_MODE=HW SGX_PRERELEASE=1 make
+RUN SGX_DEBUG=0 SGX_MODE=HW SGX_PRERELEASE=1 make
 
 FROM sgxbase as sample
 RUN apt-get install -y \
@@ -73,9 +103,7 @@ RUN apt-get install -y --no-install-recommends libsgx-urts
 COPY --from=sgx_sample_builder /opt/intel/sgxsdk/SampleCode/SampleEnclave/app .
 COPY --from=sgx_sample_builder /opt/intel/sgxsdk/SampleCode/SampleEnclave/enclave.signed.so .
 
-RUN adduser -q --disabled-password --gecos "" --no-create-home sgxuser \
-    && (getent group sgx >/dev/null || groupadd -r sgx) \
-    && usermod -aG sgx sgxuser
+RUN adduser -q --disabled-password --gecos "" --no-create-home sgxuser
 USER sgxuser
 CMD ./app
 
