@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # 构建 PCCS 镜像并启动容器（与 aesm-service/build_and_run_aesm_docker.sh 类似：build + run 一体）。
-# 运行参数见本目录 README.md（1.2 Start PCCS Service）；并与 aesmd 容器共享 socket 卷 aesmd-socket。
+# 运行参数见本目录 README.md（1.2 Start PCCS Service）；与 AESM 共享宿主机目录 AESMD_SOCKET_DIR（默认 ~/aesmd-shared）。
 #
 
 set -euo pipefail
