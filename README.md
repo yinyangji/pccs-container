@@ -11,11 +11,11 @@
 
 | 组件 | 说明 |
 |------|------|
-| **`aesm-service/`** | 来自 **Intel® Software Guard Extensions** 官方 Linux 发行配套思路下的 Docker 多阶段示例（目录内 `Dockerfile`、`build_and_run_aesm_docker.sh` 含 **Intel 版权声明**，由 **intel/linux-sgx** 一类上游材料复制/改编而来）。本仓库用其 **`aesm` 构建目标** 生成 AESM 服务镜像，在容器内运行 `aesm_service --no-daemon`，并通过 **与 PCCS 共用的 Podman named volume** 暴露 `aesm.socket`。 |
+| **`aesm-service/`** | 来自 **Intel® Software Guard Extensions** 官方 Linux 发行配套思路下的 Docker 多阶段示例（目录内 `Dockerfile`、`build_and_run_aesm_docker.sh` 含 **Intel 版权声明**，由 **intel/linux-sgx** 一类上游材料复制/改编而来）。本仓库用其 **`aesm` 构建目标** 生成 AESM 服务镜像，在容器内运行 `aesm_service --no-daemon`，并将 **`aesm.socket` 落在宿主机目录**（默认 **`~/aesmd-shared`**，与 PCCS 共用绑定挂载），以便 **host 上普通用户进程** 连接 AESM。 |
 | **本仓库 `Dockerfile` / `build-image.sh`** | 构建 PCCS **运行环境镜像**（Intel SGX APT 源、依赖与入口脚本；PCCS 包 **`sgx-dcap-pccs`** 默认在容器内按需安装，见下文）。 |
-| **`run-pccs-rootless.sh`** | 以 rootless Podman 启动 PCCS 容器，挂载 AESM socket volume、SGX 设备与项目目录。 |
+| **`run-pccs-rootless.sh`** | 以 rootless Podman 启动 PCCS 容器，挂载 AESM socket 宿主机目录、SGX 设备与项目目录。 |
 
-架构要点：**先起 AESMD 容器**，再起 PCCS；两者通过同一 volume（默认名 **`aesmd-socket`**）挂载到容器内 **`/var/run/aesmd`**，PCCS 使用其中的 **`aesm.socket`**。
+架构要点：**先起 AESMD 容器**，再起 PCCS；两者通过**同一宿主机目录**（默认 **`$HOME/aesmd-shared`**，环境变量 **`AESMD_SOCKET_DIR`**）绑定到容器内 **`/var/run/aesmd`**，PCCS 与 host 进程均使用其中的 **`aesm.socket`**。
 
 ## 3) 配置 rootless Podman 镜像加速（可选）
 
@@ -88,25 +88,30 @@ cd aesm-service
 podman build --target aesm -t localhost/sgx_aesm -f ./Dockerfile ./
 ```
 
-创建与 PCCS 脚本一致的 **named volume**（默认名 `aesmd-socket`，勿与 `run-pccs-rootless.sh` 中 `AESMD_SOCKET_VOLUME` 不一致）：
+创建与 PCCS 脚本一致的 **宿主机 socket 目录**（默认 **`~/aesmd-shared`**，脚本会设置组与 ACL，便于 host 普通用户访问）：
 
 ```bash
-podman volume inspect aesmd-socket >/dev/null 2>&1 || podman volume create aesmd-socket
+mkdir -p ~/aesmd-shared
 ```
 
-启动 AESM 容器（按主机设备情况增减 `--device`；无 `/dev/sgx_vepc` 则去掉该行）：
+推荐直接使用脚本（含构建、权限与 `podman run` 参数）：
+
+```bash
+./build_and_run_aesm_docker.sh
+```
+
+或手动启动 AESM 容器（按主机设备情况增减 `--device`；无 `/dev/sgx_vepc` 则去掉该行）：
 
 ```bash
 podman rm -f aesm-service 2>/dev/null || true
-podman run -d --name aesm-service \
+podman run -d --name aesm-service --privileged --security-opt label=disable \
   --device /dev/sgx_enclave --device /dev/sgx_provision \
   $([ -e /dev/sgx_vepc ] && echo --device /dev/sgx_vepc) \
-  -v /dev/log:/dev/log \
-  -v aesmd-socket:/var/run/aesmd:Z \
+  -v "${HOME}/aesmd-shared:/var/run/aesmd:Z" \
   localhost/sgx_aesm
 ```
 
-确认 socket 侧就绪（需在 PCCS 容器内或同 volume 视角下验证；主机上可直接看 volume 挂载点或使用 `podman exec`）：
+确认 socket 侧就绪（主机上应能看到 **`~/aesmd-shared/aesm.socket`**，或使用 `podman exec`）：
 
 ```bash
 podman ps --filter name=aesm-service
@@ -165,7 +170,7 @@ sudo dpkg --configure -a
 
 ### 5.4 改为由入口脚本自动运行 PCCS
 
-确认 AESMD 仍在运行且 **`aesmd-socket`** 未删。在宿主机：
+确认 AESMD 仍在运行且 **`~/aesmd-shared`**（或你配置的 **`AESMD_SOCKET_DIR`**）仍存在。在宿主机：
 
 ```bash
 PCCS_MANUAL_INSTALL_MODE=false PCCS_API_KEY="<你的_Intel_PCS_API_KEY>" ./run-pccs-rootless.sh
@@ -188,7 +193,7 @@ CONTAINER_NAME="sgx-pccs" \
 - **设备**：`run-pccs-rootless.sh` 映射 `/dev/sgx_enclave`、`/dev/sgx_provision`；若主机存在 **`/dev/sgx_vepc`** 则一并映射（QE3/EDMM 常见依赖）。
 - **Rootless**：打开设备仍受宿主机内核与节点权限约束。通常需将运行 Podman 的用户加入 **`sgx`** 组（`sudo usermod -aG sgx "$USER"` 后重新登录或 `newgrp sgx`）。若 `/dev/sgx_provision` 为 `root:root` 且 `600`，需按安全策略调整 udev/组或改用有权限的方式运行。
 - **脚本**：已使用 **`--group-add keep-groups`** 以继承宿主辅助组。
-- **AESM volume**：默认 **`aesmd-socket`** → 容器内 **`/var/run/aesmd`**（**`aesm.socket`**）。覆盖时使用 **`AESMD_SOCKET_VOLUME`**。
+- **AESM socket 目录**：默认 **`$HOME/aesmd-shared`** 绑定到容器内 **`/var/run/aesmd`**（**`aesm.socket`**）。覆盖时使用 **`AESMD_SOCKET_DIR`**（须与 AESM、PCCS 一致）。
 - **镜像内 sudo**：已配置免密 sudo，便于在 `podman exec` 内安装与排查。
 
 ## 6) 容器内代理与排错（apt / pip）
@@ -244,43 +249,26 @@ podman logs -f sgx-pccs
 ```bash
 podman rm -f sgx-pccs
 podman rm -f aesm-service
-# 若需删除 socket volume：podman volume rm aesmd-socket
+# 若需清空 socket：rm -f ~/aesmd-shared/aesm.socket（并视情况重启 AESM 容器）
 ```
 
-## 9) 作为 systemd user unit 运行（登录前可用）
+## 9) systemd user unit（可选）
+
+模板在仓库 **`systemd/user/`**（已修复 `ExecStartPre`，避免出现 journal 里 **`socket_dir` 未设置**、**`AESMD_SOCKET_DIR///.../$HOME`** 等误报）。
 
 ```bash
-./install-user-unit.sh
+./install-user-unit.sh install   # 复制单元到 ~/.config/systemd/user/，必要时修正异常的 AESMD_SOCKET_DIR 行
+./install-user-unit.sh remove    # 停止并删除单元，避免与手动 podman 抢容器名
 ```
 
-生成：
-
-- `~/.config/systemd/user/sgx-pccs.service`
-- `~/.config/sgx-pccs/pccs.env`
-
-说明：当前 **`install-user-unit.sh`** 内的 `podman run` 为简化示例（端口映射、环境变量），**未包含** 与 **`run-pccs-rootless.sh`** 相同的 AESM volume、设备映射与 `keep-groups`。若需开机自启且依赖 AESMD，请自行按 **`run-pccs-rootless.sh`** 补齐 **`ExecStart`** 参数，或确保 AESMD 已由其他 unit 先行启动且 volume 一致。
-
-常用命令：
-
-```bash
-systemctl --user restart sgx-pccs.service
-systemctl --user status sgx-pccs.service
-journalctl --user -u sgx-pccs.service -f
-```
-
-登录前自启（需一次性 root 权限）：
-
-```bash
-sudo loginctl enable-linger "$USER"
-loginctl show-user "$USER" -p Linger
-```
+默认不 `enable --now`；需要自启时再执行 `systemctl --user enable --now sgx-aesm.service`。日常也可只用 **`aesm-service/build_and_run_aesm_docker.sh`** 与 **`pccs/build_and_run_pccs_docker.sh`**。
 
 ## 环境变量说明（常用）
 
 - `PCCS_API_KEY`：Intel PCS API Key（建议必填）
 - `PCCS_PORT`：监听端口（默认 `8081`；非 host 网络时需自行 `-p` 映射）
 - `PCCS_MANUAL_INSTALL_MODE`：首次安装 `true`，完成后改为 `false`（默认脚本为 `true`）
-- `AESMD_SOCKET_VOLUME`：与 AESMD 共用的 volume 名（默认 `aesmd-socket`）
+- `AESMD_SOCKET_DIR`：与 AESMD 共用的**宿主机目录**（默认 `$HOME/aesmd-shared`）
 - `PROJECTS_HOST_DIR` / `PROJECTS_CONTAINER_DIR`：宿主机项目目录映射进 PCCS 容器
 - `PCCS_ADMIN_PASSWORD` / `PCCS_USER_PASSWORD` / `PCCS_PROXY` / `PCCS_REFRESH_SCHEDULE` / `PCCS_LOG_LEVEL` / `PCCS_USE_SECURE_CERT`
 - `PCCS_DEBUG_SHELL_ON_FAIL`：PCCS 退出后是否进入 shell 便于排查

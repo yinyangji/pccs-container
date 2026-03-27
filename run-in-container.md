@@ -117,3 +117,42 @@ ls -l "${HOME}/.local/share/aesmd-shared"
 1. `aesm.socket` 是否存在
 2. `AESMD_SOCKET_DIR` 在两个脚本中是否一致
 3. 容器是否都正常运行
+
+---
+
+### 6) 宿主机上跑 SGX 样例：把 AESM 连到用户目录下的 `aesm.socket`
+
+Intel PSW 默认连 **`/var/run/aesmd/aesm.socket`**。用 `aesm-service/build_and_run_aesm_docker.sh` 时，socket 实际在 **`$AESMD_SOCKET_DIR/aesm.socket`**（默认 **`$HOME/aesmd-shared/aesm.socket`**），未做 root 下符号链接时，宿主机上的 **`app`** 会报：
+
+`Failed to connect to socket /var/run/aesmd/aesm.socket`
+
+可用仓库 **`aesm-service/redirect_sock.c`**：编译为共享库，**`LD_PRELOAD`** 在进程内把对上述固定路径的 `connect` 重定向到你的用户路径。
+
+```bash
+cd "${HOME}/projects/pccs-container/aesm-service"
+gcc -fPIC -shared -o libredirect.so redirect_sock.c -ldl
+```
+
+运行样例（路径与 **`AESMD_SOCKET_DIR`** 一致；下面以默认 **`~/aesmd-shared`** 为例）：
+
+```bash
+export AESMD_SOCKET_REDIRECT="${HOME}/aesmd-shared/aesm.socket"
+export LD_PRELOAD=/绝对路径/到/libredirect.so
+# 若样例依赖 sample 自带 libcrypto：
+LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${PWD}/sample_libcrypto" ./app
+```
+
+一行示例（在样例目录下、且已 `export AESMD_SOCKET_REDIRECT`）：
+
+```bash
+AESMD_SOCKET_REDIRECT="${HOME}/aesmd-shared/aesm.socket" \
+  LD_PRELOAD="${HOME}/projects/pccs-container/aesm-service/libredirect.so" \
+  LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${PWD}/sample_libcrypto" \
+  ./app
+```
+
+说明：
+
+- **`AESMD_SOCKET_REDIRECT`**：重定向目标，须为**实际存在的** socket 路径（先确保 AESM 容器已启动且 `ls -l` 可见该文件）。
+- **`LD_PRELOAD`**：请使用 **`libredirect.so` 的绝对路径**，避免工作目录变化后找不到库。
+- 仅影响**当前进程**及其子进程；不修改系统全局配置。
