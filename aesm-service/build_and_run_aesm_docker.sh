@@ -30,11 +30,40 @@
 #
 
 set -e
-docker build --target aesm --build-arg https_proxy=$https_proxy \
-             --build-arg http_proxy=$http_proxy -t sgx_aesm -f ./Dockerfile ./
 
-docker volume inspect aesmd-socket >/dev/null 2>&1 || docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=rw aesmd-socket
+DOCKER="${DOCKER:-podman}"
+IMAGE_NAME="${IMAGE_NAME:-localhost/sgx_aesm:latest}"
+CONTAINER_NAME="${CONTAINER_NAME:-aesm-service}"
+AESMD_SOCKET_DIR="${AESMD_SOCKET_DIR:-$HOME/aesmd-shared}"
+AESMD_SHARED_GROUP="${AESMD_SHARED_GROUP:-users}"
 
-# If you use the Legacy Launch Control driver, replace /dev/sgx/enclave with /dev/isgx, and remove
-# --device=/dev/sgx/provision
-docker run -d --name aesm-service --env http_proxy --env https_proxy --device=/dev/sgx_enclave --device=/dev/sgx_provision --device=/dev/sgx_vepc -v /dev/log:/dev/log -v aesmd-socket:/var/run/aesmd -it sgx_aesm
+"${DOCKER}" build --target aesm --build-arg https_proxy=$https_proxy \
+             --build-arg http_proxy=$http_proxy -t "${IMAGE_NAME}" -f ./Dockerfile ./
+
+# Shared socket dir for cross-user access (group + ACL).
+mkdir -p "${AESMD_SOCKET_DIR}"
+chgrp "${AESMD_SHARED_GROUP}" "${AESMD_SOCKET_DIR}" 2>/dev/null || true
+chmod 2770 "${AESMD_SOCKET_DIR}" || true
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m "g:${AESMD_SHARED_GROUP}:rwx,d:g:${AESMD_SHARED_GROUP}:rwx" "${AESMD_SOCKET_DIR}" || true
+fi
+
+"${DOCKER}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+# If you use the Legacy Launch Control driver, replace /dev/sgx_enclave with /dev/isgx,
+# and remove --device=/dev/sgx_provision / --device=/dev/sgx_vepc.
+DEVICE_ARGS="--device=/dev/sgx_enclave --device=/dev/sgx_provision"
+if [ -e /dev/sgx_vepc ]; then
+  DEVICE_ARGS="${DEVICE_ARGS} --device=/dev/sgx_vepc"
+fi
+
+KEEP_GROUPS=""
+case "${DOCKER}" in podman) KEEP_GROUPS="--group-add keep-groups --security-opt label=disable" ;; esac
+
+"${DOCKER}" run -d --name "${CONTAINER_NAME}" \
+  --env http_proxy --env https_proxy \
+  ${KEEP_GROUPS} \
+  ${DEVICE_ARGS} \
+  -v /dev/log:/dev/log \
+  -v "${AESMD_SOCKET_DIR}:/var/run/aesmd:Z" \
+  -it "${IMAGE_NAME}"

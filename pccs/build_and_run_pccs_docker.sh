@@ -11,7 +11,9 @@ top_dir=$(dirname "${curr_dir}")
 
 IMAGE_NAME="${IMAGE_NAME:-localhost/local/pccs-container:ubuntu24.04}"
 CONTAINER_NAME="${CONTAINER_NAME:-pccs}"
-AESMD_VOLUME="${AESMD_VOLUME:-aesmd-socket}"
+AESMD_SOCKET_DIR="${AESMD_SOCKET_DIR:-$HOME/aesmd-shared}"
+AESMD_SHARED_GROUP="${AESMD_SHARED_GROUP:-users}"
+DOCKER="${DOCKER:-podman}"
 
 # docker build 默认使用 bridge：容器内 127.0.0.1 不是宿主机，故指向本机 Clash 等代理会失败。
 # BUILD_NETWORK=auto（默认）：若 http(s)_proxy 含 127.0.0.1 或 localhost，自动加 --network host
@@ -54,7 +56,8 @@ usage: $(basename "$0") [OPTION]...
   -f                                docker build --no-cache
   -h                                帮助
 
-  环境变量：IMAGE_NAME、CONTAINER_NAME、AESMD_VOLUME（与 aesm-service 共用 aesmd socket 卷名，默认 aesmd-socket）
+  环境变量：IMAGE_NAME、CONTAINER_NAME、AESMD_SOCKET_DIR（默认 \$HOME/aesmd-shared）
+           AESMD_SHARED_GROUP（默认 users）、DOCKER（默认 podman）
            BUILD_NETWORK：docker build 网络模式；默认 auto（本机代理时自动 host）。见脚本内注释。
 EOM
     exit 1
@@ -101,7 +104,7 @@ build_image() {
     cd "${top_dir}"
     pccs_docker_build_network_array
     if [[ -n "${docker_build_clean_param}" ]]; then
-        docker build --no-cache \
+        "${DOCKER}" build --no-cache \
             "${docker_build_net[@]}" \
             --build-arg http_proxy \
             --build-arg https_proxy \
@@ -113,7 +116,7 @@ build_image() {
             -t "${IMAGE_NAME}" \
             "${curr_dir}"
     else
-        docker build \
+        "${DOCKER}" build \
             "${docker_build_net[@]}" \
             --build-arg http_proxy \
             --build-arg https_proxy \
@@ -137,21 +140,25 @@ build_image() {
     fi
 }
 
-# 与 aesm-service/build_and_run_aesm_docker.sh 使用同一卷名，便于 PCCS 挂载 /var/run/aesmd
-ensure_aesmd_volume() {
-    docker volume inspect "${AESMD_VOLUME}" >/dev/null 2>&1 \
-        || docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=rw "${AESMD_VOLUME}"
+# 与 aesm-service/build_and_run_aesm_docker.sh 使用同一共享目录，便于 PCCS 挂载 /var/run/aesmd
+ensure_aesmd_socket_dir() {
+    mkdir -p "${AESMD_SOCKET_DIR}"
+    chgrp "${AESMD_SHARED_GROUP}" "${AESMD_SOCKET_DIR}" 2>/dev/null || true
+    chmod 2770 "${AESMD_SOCKET_DIR}" || true
+    if command -v setfacl >/dev/null 2>&1; then
+        setfacl -m "g:${AESMD_SHARED_GROUP}:rwx,d:g:${AESMD_SHARED_GROUP}:rwx" "${AESMD_SOCKET_DIR}" || true
+    fi
 }
 
 # README.md 1.2；并挂载 aesmd socket（需先启动 aesm-service 容器写入 socket）
 run_container() {
-    ensure_aesmd_volume
-    docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+    ensure_aesmd_socket_dir
+    "${DOCKER}" rm -f "${CONTAINER_NAME}" 2>/dev/null || true
     echo "Run => ${CONTAINER_NAME} (${IMAGE_NAME})"
-    docker run -d \
+    "${DOCKER}" run -d \
         --privileged \
         -v /sys/firmware/efi/:/sys/firmware/efi/ \
-        -v "${AESMD_VOLUME}:/var/run/aesmd" \
+        -v "${AESMD_SOCKET_DIR}:/var/run/aesmd:Z" \
         --name "${CONTAINER_NAME}" \
         --restart always \
         --net host \
@@ -165,15 +172,15 @@ run_container() {
 
 publish_image() {
     echo "Push ${IMAGE_NAME} ..."
-    docker push "${IMAGE_NAME}"
+    "${DOCKER}" push "${IMAGE_NAME}"
 }
 
 save_image() {
     mkdir -p "${top_dir}/images"
     local base
     base=$(echo "${IMAGE_NAME}" | tr '/:' '_')
-    docker save -o "${top_dir}/images/${base}.tar" "${IMAGE_NAME}"
-    docker save "${IMAGE_NAME}" | gzip > "${top_dir}/images/${base}.tgz"
+    "${DOCKER}" save -o "${top_dir}/images/${base}.tar" "${IMAGE_NAME}"
+    "${DOCKER}" save "${IMAGE_NAME}" | gzip > "${top_dir}/images/${base}.tgz"
     echo "Saved: ${top_dir}/images/${base}.tar and .tgz"
 }
 
